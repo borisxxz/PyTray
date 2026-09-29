@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 虚拟环境与本地配置
+venv/
+pytray.json
+
+# 本机专用启动快捷方式（内含绝对路径）
+PyTray.lnk
+
+# PyInstaller 构建产物
+build/
+dist/
+*.spec

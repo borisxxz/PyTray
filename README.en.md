@@ -94,31 +94,75 @@ build.bat
 
 Produces `dist\PyTray.exe` (single file, windowed, icon embedded).
 
-## CI Builds
+## CI Builds & Release Guide
 
-The repo is mirrored on GitHub and [CNB](https://cnb.cool) and uses **no
-self-hosted runners**. PyInstaller only produces Windows binaries, while CNB
-official nodes are Linux, so:
+The repo is mirrored on GitHub and [CNB](https://cnb.cool) (`origin` pushes both)
+and uses **no self-hosted runners**. New maintainers: follow this section.
 
-- **GitHub Actions** (`windows-latest`) runs tests and actually builds `PyTray.exe`
-- **CNB Cloud Native Build** waits for the GitHub Release on a `v*` tag,
-  downloads the exe, and republishes it on the CNB Release
+### Architecture (why)
 
-| Platform | Config | What it does |
+PyInstaller only produces Windows binaries, while CNB official build nodes are
+Linux, so:
+
+| Platform | Config | Role |
 |---|---|---|
-| GitHub | `.github/workflows/build.yml` | Unit tests + PyInstaller; `v*` tags → GitHub Release |
-| CNB | `.cnb.yml` | Syntax check; `v*` tags → fetch exe and attach to CNB Release |
+| GitHub | `.github/workflows/build.yml` | Runs unit tests and **actually builds** `PyTray.exe` on `windows-latest` |
+| CNB | `.cnb.yml` | On a `v*` tag, waits for the GitHub Release, downloads the exe, and republishes it on the CNB Release |
 
-Release flow (`origin` pushes both remotes):
+### Day-to-day: code only
 
 ```
-git tag v1.2.0
+git add -A
+git commit -m "what changed"
+git push origin main
+```
+
+Automatically:
+
+- GitHub Actions: unit tests + `PyTray.exe` build (downloadable from the run's Artifacts)
+- CNB Cloud Native Build: syntax check
+
+No formal Release is created — you do not want a new release per commit.
+
+### Releasing: for users to download
+
+With the code already on `main`:
+
+```
+git tag v1.2.2
 git push origin main --tags
 ```
 
-Both platforms then have a `v1.2.0` Release with `PyTray.exe`. If CNB times
-out downloading, GitHub Actions is probably still building — the pipeline waits
-about 15 minutes; otherwise check Actions and re-run the CNB pipeline.
+(or split: `git push origin main`, then `git push origin v1.2.2`)
+
+Automatically:
+
+1. **GitHub**: tests + build → Release `v1.2.2` with `PyTray.exe`
+2. **CNB**: pipeline waits for the GitHub package (up to 30 minutes) →
+   CNB Release with the same exe
+
+Both platforms then have a downloadable `PyTray.exe`.
+
+> Use tags of the form **`v` + semver** (`v1.2.2`). The CNB pipeline matches
+> `v*`; tags without `v` (e.g. `1.0.0`) will **not** trigger the CNB release pipeline.
+
+### Post-release checklist
+
+| Check | Where | Expect |
+|---|---|---|
+| GitHub Actions | [Actions](../../actions) | `build` green |
+| GitHub Release | [Releases](../../releases) | Target version with `PyTray.exe` |
+| CNB build | repo → Cloud Native Build | `tag_push` run succeeded (`v*`) |
+| CNB Release | repo → Release | Same version with `PyTray.exe` |
+
+### CI troubleshooting
+
+- **CNB ran but no Release**: open the `tag_push` log. If it is stuck on
+  `download exe from GitHub release`, GitHub has not published yet or Actions
+  failed — confirm the exe on the GitHub Release, then re-run the CNB pipeline
+- **Nothing on CNB after tagging**: the tag must be `v1.x.x` (match `v*`) and
+  must be pushed to CNB (`git push origin <tag>`)
+- **Local package only**: run `build.bat`, see previous section
 
 ## Development & Testing
 

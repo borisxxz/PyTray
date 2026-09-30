@@ -86,28 +86,71 @@ build.bat
 
 产物为 `dist\PyTray.exe`（单文件、无控制台、内嵌图标）。
 
-## CI 自动构建
+## CI 自动构建与发版指南
 
-仓库同时托管在 GitHub 与 [CNB](https://cnb.cool)，**不依赖任何自托管 Runner**。
-PyInstaller 只能在 Windows 出包，而 CNB 官方节点是 Linux，因此：
+仓库同时托管在 GitHub 与 [CNB](https://cnb.cool)（`origin` 双推送），
+**不依赖任何自托管 Runner**。换人维护请按本节操作。
 
-- **GitHub Actions**（`windows-latest`）真正跑单测并打包 `PyTray.exe`
-- **CNB 云原生构建** 在打 `v*` 标签时，从 GitHub Release 取下 exe，再发布到 CNB Release
+### 架构（为什么要这样）
 
-| 平台 | 配置文件 | 做什么 |
+PyInstaller 只能在 Windows 上出 `.exe`，CNB 官方构建节点是 Linux，因此：
+
+| 平台 | 配置文件 | 职责 |
 |---|---|---|
-| GitHub | `.github/workflows/build.yml` | 单测 + PyInstaller；`v*` 标签 → GitHub Release |
-| CNB | `.cnb.yml` | 语法检查；`v*` 标签 → 下载 exe 并挂到 CNB Release |
+| GitHub | `.github/workflows/build.yml` | 在 `windows-latest` 上跑单测并**真正打包** `PyTray.exe` |
+| CNB | `.cnb.yml` | 打 `v*` 标签时，从 GitHub Release **取下 exe**，再发到 CNB Release |
 
-发布流程（`origin` 会同时推两边）：
+### 日常：只改代码
 
 ```
-git tag v1.2.0
+git add -A
+git commit -m "说明改了什么"
+git push origin main
+```
+
+自动发生：
+
+- GitHub Actions：单测 + 打包出 `PyTray.exe`（在 Actions 运行记录的 Artifacts 里可下载）
+- CNB 云原生构建：语法检查
+
+**不会**生成正式 Release——避免每改一行就发一个版本。
+
+### 发版：给用户下载
+
+在代码已推到 `main` 的前提下：
+
+```
+git tag v1.2.2
 git push origin main --tags
 ```
 
-两边都会出现 `v1.2.0` 的 Release 与 `PyTray.exe`。
-若 CNB 侧下载超时，多半是 GitHub Actions 还没打完包——流水线会等待约 15 分钟，仍失败就到 Actions 看构建结果后手动重跑 CNB 流水线。
+（或分开：`git push origin main` 再 `git push origin v1.2.2`）
+
+自动发生：
+
+1. **GitHub**：重新跑测试和打包 → 创建 Release `v1.2.2` → 挂上 `PyTray.exe`
+2. **CNB**：流水线等待 GitHub 出包（约 30 分钟内轮询）→ 创建 CNB Release → 挂上同一 exe
+
+完成后两边都有可下载的 `PyTray.exe`。
+
+> 标签请用 **`v` + 语义化版本**（`v1.2.2`）。CNB 流水线用 `v*` 匹配；
+> 不带 `v` 的标签（如 `1.0.0`）**不会**触发 CNB 发版流水线。
+
+### 发版后检查清单
+
+| 检查项 | 位置 | 期望 |
+|---|---|---|
+| GitHub Actions | [Actions](../../actions) | `build` 绿勾 |
+| GitHub Release | [Releases](../../releases) | 有目标版本与 `PyTray.exe` |
+| CNB 构建 | 仓库 → 云原生构建 | `tag_push` 那条成功（`v*`） |
+| CNB Release | 仓库 → Release | 有同一版本与 `PyTray.exe` |
+
+### 常见问题（CI）
+
+- **CNB 有构建记录但没有 Release**：看 `tag_push` 日志。若停在 `download exe from GitHub release`，
+  是 GitHub 还没打完包或 Actions 失败——先确认 GitHub Release 里有没有 exe，再在 CNB 重跑该流水线
+- **打标签后 CNB 完全没反应**：确认标签是 `v1.x.x`（要匹配 `v*`），且标签已推到 CNB（`git push origin <tag>`）
+- **只想本地出包**：`build.bat`，见上一节
 
 ## 开发与测试
 

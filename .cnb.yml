@@ -15,7 +15,7 @@ $:tag_push:
       # GitHub 仓库（exe 的真正产出方）；与 .github/workflows/build.yml 对应
       GITHUB_REPO: borisxxz/PyTray
       EXE_NAME: PyTray.exe
-      WAIT_TIMEOUT_SEC: "900"
+      WAIT_TIMEOUT_SEC: "1800"
     stages:
       - name: download exe from GitHub release
         script: |

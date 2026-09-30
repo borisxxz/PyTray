@@ -786,15 +786,27 @@ def _open_mark_dialog(hwnd: int) -> None:
                               width=250, placeholder_text=_window_title(hwnd))
     name_entry.pack(fill="x", padx=22, pady=(3, 12))
 
-    # ---- 色板：12 预设色 + ✕ 清除
+    # ---- 色板：12 预设色 + ✕ 清除（回调依赖的预览/错误行先建好，避免前向引用）
     ctk.CTkLabel(win, text=_("mark_color"), font=FONT_CAP,
                  text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
     palette = ctk.CTkFrame(win, fg_color="transparent")
     palette.pack(fill="x", padx=22, pady=(3, 0))
-    swatches: list[tuple["ctk.CTkButton", "str | None"]] = []
+    ctk.CTkLabel(win, text=_("mark_custom_label"), font=FONT_CAP,
+                 text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
+    custom_row = ctk.CTkFrame(win, fg_color="transparent")
+    custom_row.pack(fill="x", padx=22, pady=(3, 0))
+    preview = ctk.CTkLabel(custom_row, text="●", font=FONT_H1, text_color=TEXT_3)
+    preview.pack(side="left")
     custom_var = ctk.StringVar()
+    custom_entry = ctk.CTkEntry(custom_row, textvariable=custom_var, font=FONT_BODY,
+                                height=36, width=200,
+                                placeholder_text=_("mark_custom"))
+    custom_entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
     err_lbl = ctk.CTkLabel(win, text="", font=FONT_CAP, text_color=DANGER,
-                           anchor="w", height=18)
+                           anchor="w", height=22)
+    err_lbl.pack(fill="x", padx=22)
+
+    swatches: list[tuple["ctk.CTkButton", "str | None"]] = []
 
     def repaint_selection() -> None:
         for btn, c in swatches:
@@ -808,20 +820,6 @@ def _open_mark_dialog(hwnd: int) -> None:
         preview.configure(text_color=color or TEXT_3)
         repaint_selection()
 
-    for i, c in enumerate(_PRESET_COLORS):
-        btn = ctk.CTkButton(palette, text="", width=30, height=30, corner_radius=15,
-                            fg_color=c, hover_color=c, border_color=TEXT_1,
-                            command=lambda cc=c: pick(cc))
-        btn.grid(row=i // 6, column=i % 6, padx=3, pady=3)
-        swatches.append((btn, c))
-    clear_btn = ctk.CTkButton(palette, text="✕", width=30, height=30, corner_radius=15,
-                              font=FONT_CAP, fg_color=CTRL_BG, hover_color=CTRL_HOVER,
-                              text_color=TEXT_3, border_width=1, border_color=GHOST_EDGE,
-                              command=lambda: pick(None))
-    clear_btn.grid(row=0, column=6, padx=3, pady=3)
-    swatches.append((clear_btn, None))
-
-    # ---- 自定义颜色（#RRGGBB / #RGB / R,G,B），输入合法即预览
     def on_custom(*_):
         if not custom_var.get().strip():
             state["invalid"] = False
@@ -838,18 +836,20 @@ def _open_mark_dialog(hwnd: int) -> None:
             state["invalid"] = True
             err_lbl.configure(text=_("mark_invalid"))
 
-    ctk.CTkLabel(win, text=_("mark_custom_label"), font=FONT_CAP,
-                 text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
-    custom_row = ctk.CTkFrame(win, fg_color="transparent")
-    custom_row.pack(fill="x", padx=22, pady=(3, 0))
-    preview = ctk.CTkLabel(custom_row, text="●", font=FONT_H1, text_color=TEXT_3)
-    preview.pack(side="left")
-    custom_entry = ctk.CTkEntry(custom_row, textvariable=custom_var, font=FONT_BODY,
-                                height=36, width=200,
-                                placeholder_text=_("mark_custom"))
-    custom_entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
     custom_entry.bind("<KeyRelease>", on_custom)
-    err_lbl.pack(fill="x", padx=22)
+
+    for i, c in enumerate(_PRESET_COLORS):
+        btn = ctk.CTkButton(palette, text="", width=30, height=30, corner_radius=15,
+                            fg_color=c, hover_color=c, border_color=TEXT_1,
+                            command=lambda cc=c: pick(cc))
+        btn.grid(row=i // 6, column=i % 6, padx=3, pady=3)
+        swatches.append((btn, c))
+    clear_btn = ctk.CTkButton(palette, text="✕", width=30, height=30, corner_radius=15,
+                              font=FONT_CAP, fg_color=CTRL_BG, hover_color=CTRL_HOVER,
+                              text_color=TEXT_3, border_width=1, border_color=GHOST_EDGE,
+                              command=lambda: pick(None))
+    clear_btn.grid(row=0, column=6, padx=3, pady=3)
+    swatches.append((clear_btn, None))
 
     # ---- 保存 / 清除 / 取消
     def do_save(*_):

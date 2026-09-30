@@ -256,7 +256,8 @@ def _alert(msg: str) -> None:
 # ---------------------------------------------------------------- 全局状态
 # hwnd(int) -> pystray.Icon，记录当前藏在托盘里的窗口
 _window_icons: dict[int, "pystray.Icon"] = {}
-# hwnd -> {"name": 临时名称|None, "color": 色标|None}，仅会话内有效，随窗口消失
+# hwnd -> {"name": 临时名称|None, "color": 色标|None}。粘性：恢复后再收起仍保留，
+# 窗口销毁或手动清除才消失；仅会话内有效（进程退出即失效）。
 _window_marks: dict[int, dict] = {}
 _dot_imgs: dict = {}           # 色点 CTkImage 缓存（按颜色）
 _mark_dlg = None               # 当前打开的标记对话框（同时只开一个）
@@ -443,11 +444,21 @@ def _window_icon_image(hwnd: int) -> "Image.Image":
 
 # ---------------------------------------------------------------- 核心动作
 def minimize_foreground() -> None:
-    """热键回调：把前台窗口收进托盘。"""
-    hwnd = user32.GetForegroundWindow()
-    if not hwnd:
-        return
-    hwnd = int(hwnd)
+    """热键回调：把前台窗口收进托盘。
+
+    环境变量 PYTRAY_TEST_HWND（测试专用）可指定目标 hwnd，避开自动化里
+    SetForegroundWindow 被系统拒绝、热键回调读到别的窗口的竞态。
+    """
+    test_hwnd = os.environ.get("PYTRAY_TEST_HWND", "").strip()
+    if test_hwnd:
+        hwnd = int(test_hwnd, 0)
+        if not hwnd or not user32.IsWindow(hwnd):
+            return
+    else:
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return
+        hwnd = int(hwnd)
     if _SELF_HWND and hwnd == _SELF_HWND:
         _ui(hide_main_window)  # 自己的窗口走"最小化到托盘"
         return
@@ -499,6 +510,7 @@ def minimize_foreground() -> None:
 
 
 def restore_window(hwnd: int) -> None:
+    """恢复窗口；临时标记保留（粘性），下次收起仍生效。"""
     with _lock:
         icon = _window_icons.pop(hwnd, None)
     if icon:
@@ -715,45 +727,54 @@ def _ellipsize(text: str, font, max_px: int) -> str:
 
 
 def _set_window_mark(hwnd: int, name: "str | None", color: "str | None") -> None:
-    """写入临时标记并同步托盘图标与列表（仅主线程调用）。"""
+    """写入临时标记并同步托盘图标与列表（仅主线程调用）。
+
+    标记为粘性：恢复后再收起仍保留；窗口销毁或手动清除才消失。
+    不在托盘中的窗口拒绝写入，避免对话框开着时窗口已恢复留下孤儿标记。
+    """
     if not user32.IsWindow(hwnd):
         with _lock:
             _window_marks.pop(hwnd, None)
         return
     with _lock:
         icon = _window_icons.get(hwnd)
+        if icon is None:
+            _window_marks.pop(hwnd, None)
+            return
         if name or color:
             _window_marks[hwnd] = {"name": name, "color": color}
         else:
             _window_marks.pop(hwnd, None)
-    if icon:
-        icon.title = _display_name(hwnd)
-        img = _window_icon_image(hwnd)
-        if color:
-            img = _apply_color_ring(img, color)
-        icon.icon = img
+    icon.title = _display_name(hwnd)
+    img = _window_icon_image(hwnd)
+    if color:
+        img = _apply_color_ring(img, color)
+    icon.icon = img
     _refresh_windows_list()
 
 
 def _open_mark_dialog(hwnd: int) -> None:
-    """"重命名 + 色标"对话框：临时名与色标都只存内存（会话级）。"""
+    """"重命名 + 色标"对话框：临时名与色标都只存内存（会话级，粘性）。"""
     global _mark_dlg
     if not user32.IsWindow(hwnd):
         return
     if _mark_dlg is not None and _mark_dlg.winfo_exists():
-        _mark_dlg.lift()  # 同时只开一个
-        return
+        if getattr(_mark_dlg, "target_hwnd", None) == hwnd:
+            _mark_dlg.lift()  # 同一窗口：抬升，不丢未保存的编辑
+            return
+        _mark_dlg.destroy()  # 换目标窗口：关旧开新
     mark = _get_mark(hwnd)
     state = {"color": mark.get("color"), "invalid": False}
 
     win = ctk.CTkToplevel(root, fg_color=CARD)
     _mark_dlg = win
-    win.title(_("mark_title"))
+    win.target_hwnd = hwnd
+    win.title(f"{_('mark_title')} — {_display_name(hwnd)}")
     win.resizable(False, False)
     win.transient(root)
 
-    ctk.CTkLabel(win, text=_("mark_title"), font=FONT_CARD,
-                 text_color=TEXT_1, anchor="w").pack(fill="x", padx=22, pady=(18, 6))
+    ctk.CTkLabel(win, text=f"{_('mark_title')} · {_ellipsize(_display_name(hwnd), FONT_CARD, 220)}",
+                 font=FONT_CARD, text_color=TEXT_1, anchor="w").pack(fill="x", padx=22, pady=(18, 6))
 
     # ---- 临时名称
     ctk.CTkLabel(win, text=_("mark_name"), font=FONT_CAP,
@@ -813,6 +834,7 @@ def _open_mark_dialog(hwnd: int) -> None:
             repaint_selection()
         else:
             state["invalid"] = True
+            err_lbl.configure(text=_("mark_invalid"))
 
     ctk.CTkLabel(win, text=_("mark_custom_label"), font=FONT_CAP,
                  text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
@@ -895,14 +917,17 @@ def _refresh_windows_list() -> None:
         _img_keep.append(img)
         icon_lbl = ctk.CTkLabel(row, image=img, text="", width=24)
         icon_lbl.pack(side="left", padx=(10, 0), pady=9)
+        clickable = [row, icon_lbl]  # 整行可点=恢复；按钮除外防误触
         if mark.get("color"):
             dot_lbl = ctk.CTkLabel(row, image=_color_dot(mark["color"]),
                                    text="", width=14)
             dot_lbl.pack(side="left", padx=(6, 0), pady=9)
+            clickable.append(dot_lbl)
         title_lbl = ctk.CTkLabel(
             row, text=_ellipsize(_display_name(hwnd), FONT_BODY, max_px),
             anchor="w", font=FONT_BODY, text_color=TEXT_1)
         title_lbl.pack(side="left", padx=(10, 8), pady=9, fill="x", expand=True)
+        clickable.append(title_lbl)
         ctk.CTkButton(row, text=_("restore"), width=78, height=32, corner_radius=6,
                       font=FONT_BODY, fg_color=CTRL_BG, hover_color=CTRL_HOVER,
                       command=lambda h=hwnd: restore_window(h)).pack(side="right", padx=(0, 6), pady=9)
@@ -917,7 +942,7 @@ def _refresh_windows_list() -> None:
         for w in row.winfo_children() + [row]:  # CTkFrame 无 hover，用事件模拟
             w.bind("<Enter>", lambda e, r=row: r.configure(fg_color=ROW_HOVER))
             w.bind("<Leave>", lambda e, r=row: r.configure(fg_color="transparent"))
-        for w in (row, icon_lbl, title_lbl):    # 整行可点=恢复；按钮除外防误触
+        for w in clickable:
             w.bind("<Button-1>", lambda e, h=hwnd: restore_window(h))
 
 

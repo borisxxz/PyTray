@@ -32,7 +32,9 @@ code. Full credit and thanks to the original authors.
 - **Custom hotkey**: press "Change Hotkey" then any combo; conflicts with
   RegisterHotKey-style hotkeys (RBTray, GPU drivers, …) are detected at startup
 - **Temporary marks**: give any hidden window a temporary display name and a
-  color ring / dot (12 presets, or custom `#RRGGBB` / RGB); gone on restore or quit
+  color ring / dot (12 presets, or custom `#RRGGBB` / RGB). Marks are sticky —
+  they survive restore and re-hide; cleared only when the window closes or you
+  hit "Clear Mark"
 - **Bilingual UI**: switch between 中文 and English in one click
 - **Hides to tray itself**: minimizing or closing the main window sends it to
   the tray; click the PyTray tray icon to bring it back
@@ -70,7 +72,7 @@ venv\Scripts\pythonw.exe pytray.py
 | Restore | Click the window's tray icon / "Restore" in the list |
 | Close | Tray icon right-click → Close Window / "Close" in the list |
 | Change hotkey | "Change Hotkey" → press a new combo (Esc cancels) |
-| Rename / color tag | ✎ button in the list row, or tray right-click → Rename / Mark (temporary, cleared on exit) |
+| Rename / color tag | ✎ button in the list row, or tray right-click → Rename / Mark (sticky: survives restore + re-hide; cleared on window close or "Clear Mark") |
 | Switch language | 中文 / English toggle, top-right of the main window |
 | Reopen main window | Click the PyTray tray icon |
 | Quit | Tray right-click → Quit PyTray (restores all windows) |
@@ -95,11 +97,13 @@ Produces `dist\PyTray.exe` (single file, windowed, icon embedded).
 ## Development & Testing
 
 ```
+venv\Scripts\python.exe tests\test_units.py
 venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-The automated smoke test covers startup, main window visibility,
-minimize-to-tray, and hotkey minimization of a target window.
+Unit tests cover hotkey parsing and mark-color parsing. The smoke test covers
+startup, main window visibility, minimize-to-tray, and hotkey minimization of
+a target window.
 
 ## FAQ
 

@@ -112,6 +112,7 @@ _LANGS = {
         "mark_cancel": "取消",
         "mark_saved": "标记已保存",
         "mark_cleared": "标记已清除",
+        "mark_not_in_tray": "窗口已不在托盘，标记未保存",
     },
     "en": {
         "subtitle": "Minimize any window to the system tray",
@@ -151,6 +152,7 @@ _LANGS = {
         "mark_cancel": "Cancel",
         "mark_saved": "Mark saved",
         "mark_cleared": "Mark cleared",
+        "mark_not_in_tray": "Window is no longer in tray; mark not saved",
     },
 }
 lang = "zh"
@@ -261,6 +263,7 @@ _window_icons: dict[int, "pystray.Icon"] = {}
 _window_marks: dict[int, dict] = {}
 _dot_imgs: dict = {}           # 色点 CTkImage 缓存（按颜色）
 _mark_dlg = None               # 当前打开的标记对话框（同时只开一个）
+_TEST_HWND = 0                 # 测试旁路目标窗口，0 = 正常走前台窗口
 _lock = threading.Lock()
 _ui_queue: queue.Queue = queue.Queue()
 
@@ -446,14 +449,11 @@ def _window_icon_image(hwnd: int) -> "Image.Image":
 def minimize_foreground() -> None:
     """热键回调：把前台窗口收进托盘。
 
-    环境变量 PYTRAY_TEST_HWND（测试专用）可指定目标 hwnd，避开自动化里
-    SetForegroundWindow 被系统拒绝、热键回调读到别的窗口的竞态。
+    测试旁路：启动时 PYTRAY_TEST_HWND 合法则收起该窗口而非前台窗口，
+    避开自动化里 SetForegroundWindow 被系统拒绝、回调读到别的窗口的竞态。
     """
-    test_hwnd = os.environ.get("PYTRAY_TEST_HWND", "").strip()
-    if test_hwnd:
-        hwnd = int(test_hwnd, 0)
-        if not hwnd or not user32.IsWindow(hwnd):
-            return
+    if _TEST_HWND and user32.IsWindow(_TEST_HWND):
+        hwnd = _TEST_HWND
     else:
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
@@ -726,31 +726,33 @@ def _ellipsize(text: str, font, max_px: int) -> str:
     return text + "…"
 
 
-def _set_window_mark(hwnd: int, name: "str | None", color: "str | None") -> None:
-    """写入临时标记并同步托盘图标与列表（仅主线程调用）。
+def _set_window_mark(hwnd: int, name: "str | None", color: "str | None") -> bool:
+    """写入临时标记并同步托盘图标与列表（仅主线程调用）。返回是否生效。
 
     标记为粘性：恢复后再收起仍保留；窗口销毁或手动清除才消失。
-    不在托盘中的窗口拒绝写入，避免对话框开着时窗口已恢复留下孤儿标记。
+    不在托盘中时拒绝「保存」（避免对话框开着时窗口已恢复留下孤儿标记），
+    但不清掉已有粘性标记；「清除」则始终生效。
     """
     if not user32.IsWindow(hwnd):
         with _lock:
             _window_marks.pop(hwnd, None)
-        return
+        return False
     with _lock:
         icon = _window_icons.get(hwnd)
-        if icon is None:
-            _window_marks.pop(hwnd, None)
-            return
+        if icon is None and (name or color):
+            return False  # 拒绝新建/修改，保留已有粘性标记
         if name or color:
             _window_marks[hwnd] = {"name": name, "color": color}
         else:
             _window_marks.pop(hwnd, None)
-    icon.title = _display_name(hwnd)
-    img = _window_icon_image(hwnd)
-    if color:
-        img = _apply_color_ring(img, color)
-    icon.icon = img
+    if icon is not None:
+        icon.title = _display_name(hwnd)
+        img = _window_icon_image(hwnd)
+        if color:
+            img = _apply_color_ring(img, color)
+        icon.icon = img
     _refresh_windows_list()
+    return True
 
 
 def _open_mark_dialog(hwnd: int) -> None:
@@ -854,9 +856,11 @@ def _open_mark_dialog(hwnd: int) -> None:
         if state["invalid"] and custom_var.get().strip():
             err_lbl.configure(text=_("mark_invalid"))
             return
-        _set_window_mark(hwnd, name_var.get().strip() or None, state["color"])
-        _set_hint(_("mark_saved"), color=ACCENT_TXT, auto_clear=True)
-        win.destroy()
+        if _set_window_mark(hwnd, name_var.get().strip() or None, state["color"]):
+            _set_hint(_("mark_saved"), color=ACCENT_TXT, auto_clear=True)
+            win.destroy()
+        else:
+            err_lbl.configure(text=_("mark_not_in_tray"))
 
     def do_clear():
         _set_window_mark(hwnd, None, None)
@@ -1091,9 +1095,16 @@ def _build_tray() -> None:
 
 # ---------------------------------------------------------------- 主程序
 def main() -> None:
-    global current_hotkey, lang, _SELF_HWND
+    global current_hotkey, lang, _SELF_HWND, _TEST_HWND
     config = _load_config()
     lang = config.get("lang", "zh") if config.get("lang") in _LANGS else "zh"
+
+    raw_test = os.environ.get("PYTRAY_TEST_HWND", "").strip()
+    if raw_test:
+        try:
+            _TEST_HWND = int(raw_test, 0) or 0
+        except ValueError:
+            _TEST_HWND = 0
 
     if not _acquire_single_instance():
         _alert(_("already_running"))

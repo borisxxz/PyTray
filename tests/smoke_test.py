@@ -89,10 +89,6 @@ def reader():
 threading.Thread(target=reader, daemon=True).start()
 
 
-def top_hwnd(w):
-    return int(u.GetAncestor(w.winfo_id(), 2) or 0)
-
-
 def phase_find():
     global real_pid, pytray_hwnd
     for line in lines:

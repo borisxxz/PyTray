@@ -31,6 +31,8 @@ code. Full credit and thanks to the original authors.
   every hidden window with one-click restore/close
 - **Custom hotkey**: press "Change Hotkey" then any combo; conflicts with
   RegisterHotKey-style hotkeys (RBTray, GPU drivers, …) are detected at startup
+- **Temporary marks**: give any hidden window a temporary display name and a
+  color ring / dot (12 presets, or custom `#RRGGBB` / RGB); gone on restore or quit
 - **Bilingual UI**: switch between 中文 and English in one click
 - **Hides to tray itself**: minimizing or closing the main window sends it to
   the tray; click the PyTray tray icon to bring it back
@@ -68,6 +70,7 @@ venv\Scripts\pythonw.exe pytray.py
 | Restore | Click the window's tray icon / "Restore" in the list |
 | Close | Tray icon right-click → Close Window / "Close" in the list |
 | Change hotkey | "Change Hotkey" → press a new combo (Esc cancels) |
+| Rename / color tag | ✎ button in the list row, or tray right-click → Rename / Mark (temporary, cleared on exit) |
 | Switch language | 中文 / English toggle, top-right of the main window |
 | Reopen main window | Click the PyTray tray icon |
 | Quit | Tray right-click → Quit PyTray (restores all windows) |

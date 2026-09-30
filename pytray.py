@@ -100,6 +100,18 @@ _LANGS = {
         "tray_title": "PyTray — {} 收起当前窗口",
         "already_running": "PyTray 已在运行（单击右下角托盘图标可打开主界面）。\n本次启动将退出。",
         "bad_hotkey": "热键写法不合法:\n{}\n\n{}",
+        "mark": "重命名 / 标记",
+        "mark_title": "标记窗口",
+        "mark_name": "临时名称",
+        "mark_color": "色标",
+        "mark_custom_label": "自定义颜色",
+        "mark_custom": "例如：#1E78D7 或 30,120,215",
+        "mark_invalid": "颜色写法不合法",
+        "mark_save": "保存",
+        "mark_clear": "清除标记",
+        "mark_cancel": "取消",
+        "mark_saved": "标记已保存",
+        "mark_cleared": "标记已清除",
     },
     "en": {
         "subtitle": "Minimize any window to the system tray",
@@ -127,6 +139,18 @@ _LANGS = {
         "tray_title": "PyTray — {} to tray",
         "already_running": "PyTray is already running (click the tray icon).\nThis instance will exit.",
         "bad_hotkey": "Invalid hotkey:\n{}\n\n{}",
+        "mark": "Rename / Mark",
+        "mark_title": "Mark Window",
+        "mark_name": "Temporary name",
+        "mark_color": "Color tag",
+        "mark_custom_label": "Custom color",
+        "mark_custom": "e.g. #1E78D7 or 30,120,215",
+        "mark_invalid": "Invalid color format",
+        "mark_save": "Save",
+        "mark_clear": "Clear Mark",
+        "mark_cancel": "Cancel",
+        "mark_saved": "Mark saved",
+        "mark_cleared": "Mark cleared",
     },
 }
 lang = "zh"
@@ -232,6 +256,10 @@ def _alert(msg: str) -> None:
 # ---------------------------------------------------------------- 全局状态
 # hwnd(int) -> pystray.Icon，记录当前藏在托盘里的窗口
 _window_icons: dict[int, "pystray.Icon"] = {}
+# hwnd -> {"name": 临时名称|None, "color": 色标|None}，仅会话内有效，随窗口消失
+_window_marks: dict[int, dict] = {}
+_dot_imgs: dict = {}           # 色点 CTkImage 缓存（按颜色）
+_mark_dlg = None               # 当前打开的标记对话框（同时只开一个）
 _lock = threading.Lock()
 _ui_queue: queue.Queue = queue.Queue()
 
@@ -289,6 +317,65 @@ def _window_title(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(512)
     user32.GetWindowTextW(hwnd, buf, 512)
     return buf.value or _("no_title")
+
+
+# 12 个预设色标（Win11 系统色盘取色，深浅底均可见）
+_PRESET_COLORS = ("#e81123", "#f7630c", "#ffb900", "#8cbd18", "#107c10", "#00b294",
+                  "#0099bc", "#0078d4", "#4f6bed", "#9a5cd0", "#ea005e", "#9b9b9b")
+
+
+def _parse_color(text: str) -> "str | None":
+    """'#1E78D7' / '1e7' / '30,120,215' -> '#rrggbb'；写法非法返回 None。"""
+    t = str(text).strip().lower().lstrip("#")
+    if not t:
+        return None
+    rgb = [p.strip() for p in t.split(",")]
+    if len(rgb) == 3:
+        try:
+            r, g, b = (int(p) for p in rgb)
+        except ValueError:
+            return None
+        return f"#{r:02x}{g:02x}{b:02x}" if all(0 <= v <= 255 for v in (r, g, b)) else None
+    if len(t) in (3, 6) and all(c in "0123456789abcdef" for c in t):
+        return "#" + ("".join(c * 2 for c in t) if len(t) == 3 else t)
+    return None
+
+
+def _get_mark(hwnd: int) -> dict:
+    with _lock:
+        return dict(_window_marks.get(hwnd) or {})
+
+
+def _display_name(hwnd: int) -> str:
+    """临时名优先，无标记回退窗口原标题。"""
+    return _get_mark(hwnd).get("name") or _window_title(hwnd)
+
+
+def _apply_color_ring(img: "Image.Image", color: str) -> "Image.Image":
+    """图标外圈叠色环：黑环衬底 + 色环 + 外圈白色发丝线，深浅底都可见。"""
+    w, h = img.size
+    d = ImageDraw.Draw(img)
+    inset = max(3, w // 16)
+    thick = max(3, w // 10)
+    box = [inset - 1, inset - 1, w - inset, h - inset]
+    d.ellipse(box, outline="#000000", width=thick + 2)
+    d.ellipse(box, outline=color, width=thick)
+    d.ellipse([inset - 2, inset - 2, w - inset + 1, h - inset + 1],
+              outline="#ffffff", width=1)
+    return img
+
+
+def _color_dot(color: str) -> "ctk.CTkImage":
+    """列表行用的 10px 色点（按颜色缓存）。"""
+    img = _dot_imgs.get(color)
+    if img is None:
+        pil = Image.new("RGBA", (20, 20), (0, 0, 0, 0))
+        d = ImageDraw.Draw(pil)
+        d.ellipse([2, 2, 17, 17], outline="#000000", width=2)
+        d.ellipse([3, 3, 16, 16], fill=color)
+        img = ctk.CTkImage(light_image=pil, dark_image=pil, size=(10, 10))
+        _dot_imgs[color] = img
+    return img
 
 
 def _make_icon_image() -> "Image.Image":
@@ -390,14 +477,19 @@ def minimize_foreground() -> None:
     def on_close(_icon=None, _item=None):
         close_hidden_window(hwnd)
 
+    mark = _get_mark(hwnd)
+    img = _window_icon_image(hwnd)
+    if mark.get("color"):
+        img = _apply_color_ring(img, mark["color"])
     menu = pystray.Menu(
         pystray.MenuItem(_("restore"), on_restore, default=True),  # 左键单击即触发
+        pystray.MenuItem(_("mark"), lambda *_: _ui(lambda: _open_mark_dialog(hwnd))),
         pystray.MenuItem(_("close"), on_close),
     )
     icon = pystray.Icon(
         name=f"pytray-{hwnd}",
-        icon=_window_icon_image(hwnd),
-        title=_window_title(hwnd),
+        icon=img,
+        title=_display_name(hwnd),
         menu=menu,
     )
     with _lock:
@@ -434,6 +526,7 @@ def close_hidden_window(hwnd: int) -> None:
             return
         with _lock:
             icon = _window_icons.pop(hwnd, None)
+            _window_marks.pop(hwnd, None)
         if icon:
             icon.stop()
             _ui(_refresh_windows_list)
@@ -449,6 +542,9 @@ def _janitor() -> None:
             stale = [hwnd for hwnd in _window_icons
                      if not user32.IsWindow(hwnd) or user32.IsWindowVisible(hwnd)]
             icons = [_window_icons.pop(hwnd) for hwnd in stale]
+            for h in stale:
+                if not user32.IsWindow(h):
+                    _window_marks.pop(h, None)  # 窗口已销毁，临时标记随之清除
         for icon in icons:
             icon.stop()
         if icons:
@@ -618,6 +714,160 @@ def _ellipsize(text: str, font, max_px: int) -> str:
     return text + "…"
 
 
+def _set_window_mark(hwnd: int, name: "str | None", color: "str | None") -> None:
+    """写入临时标记并同步托盘图标与列表（仅主线程调用）。"""
+    if not user32.IsWindow(hwnd):
+        with _lock:
+            _window_marks.pop(hwnd, None)
+        return
+    with _lock:
+        icon = _window_icons.get(hwnd)
+        if name or color:
+            _window_marks[hwnd] = {"name": name, "color": color}
+        else:
+            _window_marks.pop(hwnd, None)
+    if icon:
+        icon.title = _display_name(hwnd)
+        img = _window_icon_image(hwnd)
+        if color:
+            img = _apply_color_ring(img, color)
+        icon.icon = img
+    _refresh_windows_list()
+
+
+def _open_mark_dialog(hwnd: int) -> None:
+    """"重命名 + 色标"对话框：临时名与色标都只存内存（会话级）。"""
+    global _mark_dlg
+    if not user32.IsWindow(hwnd):
+        return
+    if _mark_dlg is not None and _mark_dlg.winfo_exists():
+        _mark_dlg.lift()  # 同时只开一个
+        return
+    mark = _get_mark(hwnd)
+    state = {"color": mark.get("color"), "invalid": False}
+
+    win = ctk.CTkToplevel(root, fg_color=CARD)
+    _mark_dlg = win
+    win.title(_("mark_title"))
+    win.resizable(False, False)
+    win.transient(root)
+
+    ctk.CTkLabel(win, text=_("mark_title"), font=FONT_CARD,
+                 text_color=TEXT_1, anchor="w").pack(fill="x", padx=22, pady=(18, 6))
+
+    # ---- 临时名称
+    ctk.CTkLabel(win, text=_("mark_name"), font=FONT_CAP,
+                 text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
+    name_var = ctk.StringVar(value=mark.get("name") or "")
+    name_entry = ctk.CTkEntry(win, textvariable=name_var, font=FONT_BODY, height=36,
+                              width=250, placeholder_text=_window_title(hwnd))
+    name_entry.pack(fill="x", padx=22, pady=(3, 12))
+
+    # ---- 色板：12 预设色 + ✕ 清除
+    ctk.CTkLabel(win, text=_("mark_color"), font=FONT_CAP,
+                 text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
+    palette = ctk.CTkFrame(win, fg_color="transparent")
+    palette.pack(fill="x", padx=22, pady=(3, 0))
+    swatches: list[tuple["ctk.CTkButton", "str | None"]] = []
+    custom_var = ctk.StringVar()
+    err_lbl = ctk.CTkLabel(win, text="", font=FONT_CAP, text_color=DANGER,
+                           anchor="w", height=18)
+
+    def repaint_selection() -> None:
+        for btn, c in swatches:
+            btn.configure(border_width=2 if c == state["color"] else 0)
+
+    def pick(color: "str | None") -> None:
+        state["color"] = color
+        state["invalid"] = False
+        custom_var.set("")
+        err_lbl.configure(text="")
+        preview.configure(text_color=color or TEXT_3)
+        repaint_selection()
+
+    for i, c in enumerate(_PRESET_COLORS):
+        btn = ctk.CTkButton(palette, text="", width=30, height=30, corner_radius=15,
+                            fg_color=c, hover_color=c, border_color=TEXT_1,
+                            command=lambda cc=c: pick(cc))
+        btn.grid(row=i // 6, column=i % 6, padx=3, pady=3)
+        swatches.append((btn, c))
+    clear_btn = ctk.CTkButton(palette, text="✕", width=30, height=30, corner_radius=15,
+                              font=FONT_CAP, fg_color=CTRL_BG, hover_color=CTRL_HOVER,
+                              text_color=TEXT_3, border_width=1, border_color=GHOST_EDGE,
+                              command=lambda: pick(None))
+    clear_btn.grid(row=0, column=6, padx=3, pady=3)
+    swatches.append((clear_btn, None))
+
+    # ---- 自定义颜色（#RRGGBB / #RGB / R,G,B），输入合法即预览
+    def on_custom(*_):
+        if not custom_var.get().strip():
+            state["invalid"] = False
+            err_lbl.configure(text="")
+            return
+        c = _parse_color(custom_var.get())
+        if c:
+            state["color"] = c
+            state["invalid"] = False
+            err_lbl.configure(text="")
+            preview.configure(text_color=c)
+            repaint_selection()
+        else:
+            state["invalid"] = True
+
+    ctk.CTkLabel(win, text=_("mark_custom_label"), font=FONT_CAP,
+                 text_color=TEXT_3, anchor="w").pack(fill="x", padx=22)
+    custom_row = ctk.CTkFrame(win, fg_color="transparent")
+    custom_row.pack(fill="x", padx=22, pady=(3, 0))
+    preview = ctk.CTkLabel(custom_row, text="●", font=FONT_H1, text_color=TEXT_3)
+    preview.pack(side="left")
+    custom_entry = ctk.CTkEntry(custom_row, textvariable=custom_var, font=FONT_BODY,
+                                height=36, width=200,
+                                placeholder_text=_("mark_custom"))
+    custom_entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
+    custom_entry.bind("<KeyRelease>", on_custom)
+    err_lbl.pack(fill="x", padx=22)
+
+    # ---- 保存 / 清除 / 取消
+    def do_save(*_):
+        if state["invalid"] and custom_var.get().strip():
+            err_lbl.configure(text=_("mark_invalid"))
+            return
+        _set_window_mark(hwnd, name_var.get().strip() or None, state["color"])
+        _set_hint(_("mark_saved"), color=ACCENT_TXT, auto_clear=True)
+        win.destroy()
+
+    def do_clear():
+        _set_window_mark(hwnd, None, None)
+        _set_hint(_("mark_cleared"), auto_clear=True)
+        win.destroy()
+
+    btn_row = ctk.CTkFrame(win, fg_color="transparent")
+    btn_row.pack(fill="x", padx=22, pady=(14, 18))
+    ctk.CTkButton(btn_row, text=_("mark_save"), width=110, height=36, corner_radius=6,
+                  font=FONT_BODY, fg_color=ACCENT, hover_color=ACCENT_H,
+                  command=do_save).pack(side="right")
+    ctk.CTkButton(btn_row, text=_("mark_clear"), width=110, height=36, corner_radius=6,
+                  font=FONT_BODY, fg_color="transparent", border_width=1,
+                  border_color=GHOST_EDGE, hover_color=GHOST_HOVER, text_color=TEXT_2,
+                  command=do_clear).pack(side="right", padx=(0, 8))
+    ctk.CTkButton(btn_row, text=_("mark_cancel"), width=90, height=36, corner_radius=6,
+                  font=FONT_BODY, fg_color="transparent", border_width=1,
+                  border_color=GHOST_EDGE, hover_color=GHOST_HOVER, text_color=TEXT_2,
+                  command=win.destroy).pack(side="right", padx=(0, 8))
+
+    win.bind("<Escape>", lambda _e: win.destroy())
+    name_entry.bind("<Return>", do_save)
+    custom_entry.bind("<Return>", do_save)
+    preview.configure(text_color=state["color"] or TEXT_3)
+    repaint_selection()
+    win.update_idletasks()
+    x = root.winfo_x() + (root.winfo_width() - win.winfo_width()) // 2
+    y = root.winfo_y() + (root.winfo_height() - win.winfo_height()) // 2
+    win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    name_entry.focus_set()
+    win.after(80, win.grab_set)  # 延迟抓焦点，规避 Toplevel 刚创建时 grab 失败
+
+
 def _refresh_windows_list() -> None:
     """重建"已收进托盘的窗口"列表（仅在主线程调用）。"""
     with _lock:
@@ -635,8 +885,9 @@ def _refresh_windows_list() -> None:
                      text_color=TEXT_3).pack(pady=(0, 40))
         return
     width = list_frame.winfo_width()
-    max_px = width - 244 if width > 1 else 230  # 图标+按钮+内边距占用的宽度
+    max_px = max(width - 290, 120) if width > 1 else 230  # 图标+色点+三个按钮+内边距；未就绪时兜底
     for hwnd in hwnds:
+        mark = _get_mark(hwnd)
         row = ctk.CTkFrame(list_frame, fg_color="transparent", corner_radius=6)
         row.pack(fill="x", padx=4, pady=1)
         pil = _window_icon_image(hwnd)
@@ -644,8 +895,12 @@ def _refresh_windows_list() -> None:
         _img_keep.append(img)
         icon_lbl = ctk.CTkLabel(row, image=img, text="", width=24)
         icon_lbl.pack(side="left", padx=(10, 0), pady=9)
+        if mark.get("color"):
+            dot_lbl = ctk.CTkLabel(row, image=_color_dot(mark["color"]),
+                                   text="", width=14)
+            dot_lbl.pack(side="left", padx=(6, 0), pady=9)
         title_lbl = ctk.CTkLabel(
-            row, text=_ellipsize(_window_title(hwnd), FONT_BODY, max_px),
+            row, text=_ellipsize(_display_name(hwnd), FONT_BODY, max_px),
             anchor="w", font=FONT_BODY, text_color=TEXT_1)
         title_lbl.pack(side="left", padx=(10, 8), pady=9, fill="x", expand=True)
         ctk.CTkButton(row, text=_("restore"), width=78, height=32, corner_radius=6,
@@ -655,6 +910,10 @@ def _refresh_windows_list() -> None:
                       font=FONT_BODY, fg_color="transparent", border_width=1,
                       border_color=DANGER_EDGE, hover_color=DANGER_H, text_color=DANGER,
                       command=lambda h=hwnd: close_hidden_window(h)).pack(side="right", padx=(0, 10), pady=9)
+        ctk.CTkButton(row, text="✎", width=40, height=32, corner_radius=6,
+                      font=FONT_BODY, fg_color=CTRL_BG, hover_color=CTRL_HOVER,
+                      text_color=TEXT_2,
+                      command=lambda h=hwnd: _open_mark_dialog(h)).pack(side="right", padx=(0, 6), pady=9)
         for w in row.winfo_children() + [row]:  # CTkFrame 无 hover，用事件模拟
             w.bind("<Enter>", lambda e, r=row: r.configure(fg_color=ROW_HOVER))
             w.bind("<Leave>", lambda e, r=row: r.configure(fg_color="transparent"))

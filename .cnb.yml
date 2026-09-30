@@ -1,68 +1,81 @@
-# PyTray — CNB 云原生构建
+# PyTray — CNB 云原生构建（不使用自托管 Runner）
 #
-# 重要前提：PyInstaller 只能在 Windows 上产出 .exe。
-# CNB 官方构建节点是 Linux Docker，无法直接打 Windows 包。
-# 需要在「根组织 / 组织设置 / 构建节点」注册一台 Windows 自托管 Runner，
-# 标签至少包含 windows（下方 tags 命中的是节点标签的子集）。
-# 接入脚本见 CNB 文档：https://docs.cnb.cool/zh/build/build-node.html
-#
-# 说明：
-# - 自定义 Runner 默认不开启 Docker；若要用 cnbcool/attachments 上传 Release
-#   附件，需在该节点上启用 Docker，否则删掉下面 upload-attachment 阶段，
-#   改为手动在 Release 页上传 dist/PyTray.exe。
-# - 未接入 Windows Runner 时，相关流水线会失败并提示找不到节点。
+# 架构：PyInstaller 只能在 Windows 上出 .exe，CNB 官方节点是 Linux。
+# 因此由 GitHub Actions（windows-latest）真正打包，本流水线在官方云节点上：
+#   1) 语法检查（每次 push）
+#   2) 打 tag 时等 GitHub Release 出包 → 下载 → 发布到 CNB Release
+# 不依赖任何一台个人电脑。
 
-# ---------- 标签推送：打 exe + 发 Release ----------
+# ---------- 标签推送：取 GitHub 产物并发布 CNB Release ----------
 $:tag_push:
-  - name: build-exe-and-release
-    runner:
-      namespace: group
-      tags:
-        - windows
+  - name: publish-release-from-github
+    docker:
+      image: python:3.12-slim
+    env:
+      # GitHub 仓库（exe 的真正产出方）；与 .github/workflows/build.yml 对应
+      GITHUB_REPO: borisxxz/PyTray
+      EXE_NAME: PyTray.exe
+      WAIT_TIMEOUT_SEC: "900"
     stages:
-      - name: setup
+      - name: download exe from GitHub release
         script: |
-          python -m venv venv
-          venv\Scripts\python.exe -m pip install -U pip
-          venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+          python - <<'PY'
+          import os, sys, time, urllib.error, urllib.request
+          from pathlib import Path
 
-      - name: unit tests
-        script: venv\Scripts\python.exe tests\test_units.py
+          tag = os.environ.get("CNB_BRANCH", "").strip()
+          repo = os.environ["GITHUB_REPO"]
+          exe = os.environ["EXE_NAME"]
+          timeout = int(os.environ.get("WAIT_TIMEOUT_SEC", "900"))
+          url = f"https://github.com/{repo}/releases/download/{tag}/{exe}"
+          dest = Path("dist") / exe
+          dest.parent.mkdir(parents=True, exist_ok=True)
 
-      - name: build exe
-        script: |
-          venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name PyTray --icon PyTray.ico --collect-all customtkinter pytray.py
-          if (!(Test-Path dist\PyTray.exe)) { throw "dist\PyTray.exe not found" }
-          Get-Item dist\PyTray.exe | Format-List Name,Length,LastWriteTime
+          if not tag:
+              sys.exit("CNB_BRANCH is empty; expected a tag_push event")
 
-      # 内置任务：按 tag 创建/更新 Release（不支持附件；标题默认取 tag 名）
+          deadline = time.time() + timeout
+          attempt = 0
+          while time.time() < deadline:
+              attempt += 1
+              try:
+                  print(f"[{attempt}] GET {url}", flush=True)
+                  urllib.request.urlretrieve(url, dest)
+                  size = dest.stat().st_size
+                  if size < 1024:
+                      raise RuntimeError(f"file too small: {size} bytes")
+                  print(f"OK {dest} ({size} bytes)", flush=True)
+                  sys.exit(0)
+              except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError, OSError) as e:
+                  print(f"    not ready: {e}", flush=True)
+                  time.sleep(20)
+          sys.exit(f"timed out waiting for {url}")
+          PY
+
+      # 内置任务：按 tag 创建/更新 Release（标题默认取 tag 名）
       - name: create release
         type: git:release
         options:
           description: |
-            自动构建产物 PyTray.exe（单文件、无控制台、内嵌图标）。
+            自动发布产物 PyTray.exe（单文件、无控制台、内嵌图标）。
+            实际打包由 GitHub Actions 完成后同步到本 Release。
             用法：双击即用；可选将 PyTray.ico 放在同目录。
 
-      # 插件任务：把 exe 挂到 Release 附件（需要 Runner 上有 Docker）
+      # 官方云节点带 Docker，可直接用附件插件
       - name: upload attachment
         image: cnbcool/attachments:latest
         settings:
           attachments:
             - ./dist/PyTray.exe
 
-# ---------- main 推送：仅单测（同样依赖 Windows Runner） ----------
+# ---------- main 推送：语法检查（Linux 即可，无需 Windows） ----------
 main:
   push:
-    - name: unit-test
-      runner:
-        namespace: group
-        tags:
-          - windows
+    - name: syntax-check
+      docker:
+        image: python:3.12-slim
       stages:
-        - name: setup
+        - name: py_compile
           script: |
-            python -m venv venv
-            venv\Scripts\python.exe -m pip install -U pip
-            venv\Scripts\python.exe -m pip install -r requirements.txt
-        - name: unit tests
-          script: venv\Scripts\python.exe tests\test_units.py
+            python -m py_compile pytray.py hotkey_probe.py check_hotkey.py tests/test_units.py
+            echo "syntax OK"

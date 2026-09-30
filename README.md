@@ -88,29 +88,26 @@ build.bat
 
 ## CI 自动构建
 
-仓库同时托管在 GitHub 与 [CNB](https://cnb.cool)，两边都会在推 `v*` 标签时自动产出
-`PyTray.exe` 并发布到各自 Release。
+仓库同时托管在 GitHub 与 [CNB](https://cnb.cool)，**不依赖任何自托管 Runner**。
+PyInstaller 只能在 Windows 出包，而 CNB 官方节点是 Linux，因此：
 
-| 平台 | 配置文件 | 触发 | 产物 |
-|---|---|---|---|
-| GitHub | `.github/workflows/build.yml` | push / PR / `v*` 标签 | Actions 工件；标签 → GitHub Release |
-| CNB | `.cnb.yml` | `v*` 标签；`main` 推送仅单测 | CNB Release 附件 |
+- **GitHub Actions**（`windows-latest`）真正跑单测并打包 `PyTray.exe`
+- **CNB 云原生构建** 在打 `v*` 标签时，从 GitHub Release 取下 exe，再发布到 CNB Release
 
-**GitHub 开箱即用**（`windows-latest` 托管 Runner）。
+| 平台 | 配置文件 | 做什么 |
+|---|---|---|
+| GitHub | `.github/workflows/build.yml` | 单测 + PyInstaller；`v*` 标签 → GitHub Release |
+| CNB | `.cnb.yml` | 语法检查；`v*` 标签 → 下载 exe 并挂到 CNB Release |
 
-**CNB 需要先接入 Windows 自托管 Runner**（官方节点是 Linux 容器，无法打 Windows 包）：
-
-1. 根组织 → 组织设置 → 构建节点 → 新增 Runner，标签至少含 `windows`
-2. 在一台 Windows 机器上按「连接指引」执行接入脚本，保持在线
-3. （可选）若要用 `cnbcool/attachments` 自动上传 Release 附件，需在该节点启用 Docker；
-   否则删掉 `.cnb.yml` 中 `upload attachment` 阶段，改为手动在 Release 页挂 `dist\PyTray.exe`
-
-发布流程（两边相同）：
+发布流程（`origin` 会同时推两边）：
 
 ```
 git tag v1.2.0
 git push origin main --tags
 ```
+
+两边都会出现 `v1.2.0` 的 Release 与 `PyTray.exe`。
+若 CNB 侧下载超时，多半是 GitHub Actions 还没打完包——流水线会等待约 15 分钟，仍失败就到 Actions 看构建结果后手动重跑 CNB 流水线。
 
 ## 开发与测试
 

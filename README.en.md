@@ -96,31 +96,29 @@ Produces `dist\PyTray.exe` (single file, windowed, icon embedded).
 
 ## CI Builds
 
-The repo is mirrored on GitHub and [CNB](https://cnb.cool). Pushing a `v*` tag
-builds `PyTray.exe` on both platforms and publishes it to each platform's Release.
+The repo is mirrored on GitHub and [CNB](https://cnb.cool) and uses **no
+self-hosted runners**. PyInstaller only produces Windows binaries, while CNB
+official nodes are Linux, so:
 
-| Platform | Config | Trigger | Output |
-|---|---|---|---|
-| GitHub | `.github/workflows/build.yml` | push / PR / `v*` tags | Actions artifact; tags → GitHub Release |
-| CNB | `.cnb.yml` | `v*` tags; `main` push runs unit tests only | CNB Release attachment |
+- **GitHub Actions** (`windows-latest`) runs tests and actually builds `PyTray.exe`
+- **CNB Cloud Native Build** waits for the GitHub Release on a `v*` tag,
+  downloads the exe, and republishes it on the CNB Release
 
-**GitHub works out of the box** (hosted `windows-latest` runners).
+| Platform | Config | What it does |
+|---|---|---|
+| GitHub | `.github/workflows/build.yml` | Unit tests + PyInstaller; `v*` tags → GitHub Release |
+| CNB | `.cnb.yml` | Syntax check; `v*` tags → fetch exe and attach to CNB Release |
 
-**CNB needs a self-hosted Windows Runner** (official nodes are Linux containers
-and cannot produce a Windows `.exe`):
-
-1. Root org → Org settings → Build nodes → New Runner, with at least the tag `windows`
-2. Run the connection script from "Connect guide" on a Windows machine and keep it online
-3. (Optional) To auto-upload the Release attachment via `cnbcool/attachments`, enable
-   Docker on that node; otherwise remove the `upload attachment` stage in `.cnb.yml`
-   and attach `dist\PyTray.exe` on the Release page manually
-
-Release flow (same on both platforms):
+Release flow (`origin` pushes both remotes):
 
 ```
 git tag v1.2.0
 git push origin main --tags
 ```
+
+Both platforms then have a `v1.2.0` Release with `PyTray.exe`. If CNB times
+out downloading, GitHub Actions is probably still building — the pipeline waits
+about 15 minutes; otherwise check Actions and re-run the CNB pipeline.
 
 ## Development & Testing
 

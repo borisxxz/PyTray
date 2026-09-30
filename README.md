@@ -86,6 +86,32 @@ build.bat
 
 产物为 `dist\PyTray.exe`（单文件、无控制台、内嵌图标）。
 
+## CI 自动构建
+
+仓库同时托管在 GitHub 与 [CNB](https://cnb.cool)，两边都会在推 `v*` 标签时自动产出
+`PyTray.exe` 并发布到各自 Release。
+
+| 平台 | 配置文件 | 触发 | 产物 |
+|---|---|---|---|
+| GitHub | `.github/workflows/build.yml` | push / PR / `v*` 标签 | Actions 工件；标签 → GitHub Release |
+| CNB | `.cnb.yml` | `v*` 标签；`main` 推送仅单测 | CNB Release 附件 |
+
+**GitHub 开箱即用**（`windows-latest` 托管 Runner）。
+
+**CNB 需要先接入 Windows 自托管 Runner**（官方节点是 Linux 容器，无法打 Windows 包）：
+
+1. 根组织 → 组织设置 → 构建节点 → 新增 Runner，标签至少含 `windows`
+2. 在一台 Windows 机器上按「连接指引」执行接入脚本，保持在线
+3. （可选）若要用 `cnbcool/attachments` 自动上传 Release 附件，需在该节点启用 Docker；
+   否则删掉 `.cnb.yml` 中 `upload attachment` 阶段，改为手动在 Release 页挂 `dist\PyTray.exe`
+
+发布流程（两边相同）：
+
+```
+git tag v1.2.0
+git push origin main --tags
+```
+
 ## 开发与测试
 
 ```

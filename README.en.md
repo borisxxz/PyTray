@@ -94,6 +94,34 @@ build.bat
 
 Produces `dist\PyTray.exe` (single file, windowed, icon embedded).
 
+## CI Builds
+
+The repo is mirrored on GitHub and [CNB](https://cnb.cool). Pushing a `v*` tag
+builds `PyTray.exe` on both platforms and publishes it to each platform's Release.
+
+| Platform | Config | Trigger | Output |
+|---|---|---|---|
+| GitHub | `.github/workflows/build.yml` | push / PR / `v*` tags | Actions artifact; tags → GitHub Release |
+| CNB | `.cnb.yml` | `v*` tags; `main` push runs unit tests only | CNB Release attachment |
+
+**GitHub works out of the box** (hosted `windows-latest` runners).
+
+**CNB needs a self-hosted Windows Runner** (official nodes are Linux containers
+and cannot produce a Windows `.exe`):
+
+1. Root org → Org settings → Build nodes → New Runner, with at least the tag `windows`
+2. Run the connection script from "Connect guide" on a Windows machine and keep it online
+3. (Optional) To auto-upload the Release attachment via `cnbcool/attachments`, enable
+   Docker on that node; otherwise remove the `upload attachment` stage in `.cnb.yml`
+   and attach `dist\PyTray.exe` on the Release page manually
+
+Release flow (same on both platforms):
+
+```
+git tag v1.2.0
+git push origin main --tags
+```
+
 ## Development & Testing
 
 ```

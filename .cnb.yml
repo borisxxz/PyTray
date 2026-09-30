@@ -1,0 +1,68 @@
+# PyTray — CNB 云原生构建
+#
+# 重要前提：PyInstaller 只能在 Windows 上产出 .exe。
+# CNB 官方构建节点是 Linux Docker，无法直接打 Windows 包。
+# 需要在「根组织 / 组织设置 / 构建节点」注册一台 Windows 自托管 Runner，
+# 标签至少包含 windows（下方 tags 命中的是节点标签的子集）。
+# 接入脚本见 CNB 文档：https://docs.cnb.cool/zh/build/build-node.html
+#
+# 说明：
+# - 自定义 Runner 默认不开启 Docker；若要用 cnbcool/attachments 上传 Release
+#   附件，需在该节点上启用 Docker，否则删掉下面 upload-attachment 阶段，
+#   改为手动在 Release 页上传 dist/PyTray.exe。
+# - 未接入 Windows Runner 时，相关流水线会失败并提示找不到节点。
+
+# ---------- 标签推送：打 exe + 发 Release ----------
+$:tag_push:
+  - name: build-exe-and-release
+    runner:
+      namespace: group
+      tags:
+        - windows
+    stages:
+      - name: setup
+        script: |
+          python -m venv venv
+          venv\Scripts\python.exe -m pip install -U pip
+          venv\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+
+      - name: unit tests
+        script: venv\Scripts\python.exe tests\test_units.py
+
+      - name: build exe
+        script: |
+          venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name PyTray --icon PyTray.ico --collect-all customtkinter pytray.py
+          if (!(Test-Path dist\PyTray.exe)) { throw "dist\PyTray.exe not found" }
+          Get-Item dist\PyTray.exe | Format-List Name,Length,LastWriteTime
+
+      # 内置任务：按 tag 创建/更新 Release（不支持附件；标题默认取 tag 名）
+      - name: create release
+        type: git:release
+        options:
+          description: |
+            自动构建产物 PyTray.exe（单文件、无控制台、内嵌图标）。
+            用法：双击即用；可选将 PyTray.ico 放在同目录。
+
+      # 插件任务：把 exe 挂到 Release 附件（需要 Runner 上有 Docker）
+      - name: upload attachment
+        image: cnbcool/attachments:latest
+        settings:
+          attachments:
+            - ./dist/PyTray.exe
+
+# ---------- main 推送：仅单测（同样依赖 Windows Runner） ----------
+main:
+  push:
+    - name: unit-test
+      runner:
+        namespace: group
+        tags:
+          - windows
+      stages:
+        - name: setup
+          script: |
+            python -m venv venv
+            venv\Scripts\python.exe -m pip install -U pip
+            venv\Scripts\python.exe -m pip install -r requirements.txt
+        - name: unit tests
+          script: venv\Scripts\python.exe tests\test_units.py
